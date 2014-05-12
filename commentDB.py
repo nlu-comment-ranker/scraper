@@ -21,8 +21,13 @@ Base = declarative_base()
 #################################
 
 # Conditional requests, in case Author is missing
-get_author_id = lambda a: a.fullname if a else None # full identifier: t2_id
-get_author_name = lambda a: a.name if a else None   # human-readable username
+def get_author_id(author):
+    try: return a.fullname # full identifier: t2_id
+    except: return None
+
+def get_author_name(author):
+    try: return a.name # human-readable username
+    except: return None
 
 # Timestamp converter
 from datetime import datetime
@@ -35,11 +40,14 @@ class Submission(Base):
     __tablename__ = 'submissions'
     
     # Metadata
-    id = Column(Integer, primary_key=True)
-    sub_id = Column(String, nullable=False) # reddit submission ID
+    # id = Column(Integer, primary_key=True)
+    sub_id = Column(String, primary_key=True)   # reddit submission ID
     user_id = Column(String)                # reddit author ID
     subreddit_id = Column(String)           # reddit subreddit ID
     timestamp = Column(DateTime)            # post time
+
+    # Set up one->many relationship with comments
+    comments = relation("Comment", backref="submission")
 
     # Core data
     title = Column(String, nullable=False)
@@ -63,7 +71,6 @@ class Submission(Base):
         # If a PRAW submission object is given
         s = praw_obj
         
-        # self.sub_id = s.id        # partial identifier: id
         self.sub_id = s.fullname    # full identifier: type_id
         self.user_id = get_author_id(s.author)  # author.fullname
         self.subreddit_id = s.subreddit_id      # subreddit identifier
@@ -90,12 +97,15 @@ class Comment(Base):
     __tablename__ = 'comments'
 
     # Metadata
-    id = Column(Integer, primary_key=True)
-    com_id = Column(String, nullable=False) # reddit comment ID
+    # id = Column(Integer, primary_key=True)
+    com_id = Column(String, primary_key=True)   # reddit comment ID
     user_id = Column(String)                # reddit author ID
     subreddit_id = Column(String)           # reddit subreddit ID
     parent_id = Column(String)              # reddit parent ID (submission, or other comment)
     timestamp = Column(DateTime)            # post time
+
+    # Relationship: back to Submission object
+    sub_id = Column(String, ForeignKey('submissions.sub_id'))
 
     # Core data
     text = Column(String, nullable=False)
