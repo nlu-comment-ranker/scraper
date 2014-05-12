@@ -30,6 +30,7 @@ def time_from_ms(t_ms):
     dt = datetime.utcfromtimestamp(t_ms)
     return dt.strftime('%Y-%m-%d %H:%M:%S')
 
+
 class Submission(Base):
     __tablename__ = 'submissions'
     
@@ -80,7 +81,6 @@ class Submission(Base):
         self.short_link = s.short_link
         self.permalink = s.permalink
 
-
     def __repr__(self):
         return "Submission(%s,\"%s\"): \n%.140s" % (self.sub_id, 
                                                    self.title, 
@@ -108,3 +108,29 @@ class Comment(Base):
 
     # URL info
     permalink = Column(String)
+
+    def __init__(self, praw_obj=None, **kwargs):
+        if not praw_obj: 
+            return super(Submission, self).__init__(**kwargs)
+    
+        # If a PRAW submission object is given
+        c = praw_obj
+        
+        self.com_id = c.fullname    # full identifier: type_id
+        self.user_id = get_author_id(c.author)  # author.fullname
+        self.subreddit_id = c.subreddit_id      # subreddit identifier
+        self.parent_id = c.parent_id            # parent identifier
+        self.timestamp = datetime.utcfromtimestamp(c.created_utc)
+
+        self.text = c.body
+        self.score = c.score
+
+        self.distinguished = c.distinguished
+        self.gilded = c.gilded
+        self.is_root = c.is_root
+
+        self.permalink = c.permalink
+
+    def __repr__(self):
+        return "Comment(%s): \n%.140s" % (self.com_id, 
+                                          self.text)
