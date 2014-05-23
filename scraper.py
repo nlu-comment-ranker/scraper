@@ -5,6 +5,8 @@ from datetime import datetime
 from collections import defaultdict
 from sqlalchemy import create_engine
 from sqlalchemy.orm import relation, sessionmaker
+from requests.exceptions import HTTPError
+from time import sleep
 
 
 def _build_summary_stats(stats):    
@@ -53,7 +55,10 @@ def user_stats(gen, subreddits):
 
 def load_users(r, users, subreddit_models, session):
     for username in users:
-        user = r.get_redditor(username)
+        user = safe_praw_call(lambda: r.get_redditor(username))
+        if user is False:
+            print('ERROR: Failed to get user %s' % username)
+            continue
         comment_stats = \
             user_stats(user.get_comments(limit=None), subreddit_models)
         submission_stats = \
@@ -65,7 +70,8 @@ def load_users(r, users, subreddit_models, session):
         for subreddit in subreddit_models:
             activity_model = commentDB.UserActivity(
                 user_name=user.name, 
-                subreddit=subreddit_models[subreddit], 
+                subreddit_id=subreddit_models[subreddit].subreddit_id, 
+                subreddit_name=subreddit_models[subreddit].name, 
                 comment_stats=comment_stats[subreddit], 
                 submission_stats=submission_stats[subreddit])
             add_model(activity_model, session)
@@ -95,28 +101,76 @@ def load_comments(comments, users, session):
 
 
 def load_subreddit(subreddit, users, session):
-    top = subreddit.get_top_from_all(limit=2000)
-    for submission in top:
-        if not submission.is_self:
-            continue
-        if submission.author is not None and submission.author.name not in users:
-            users.add(submission.author.name)
-            user_model = commentDB.User(name=submission.author.name)
-            add_model(user_model, session)
+    flairs = ['Physics', 'Maths', 'Astro', 'Computing', 'Geo', 
+              'Eng', 'Chem', 'Soc', 'Bio', 'Psych', 'Med', 'Neuro']
+    for flair in flairs:
+        submissions = subreddit.search("flair:'%s'" % flair, sort='top', limit=None)
+        for submission in submissions:
+            if not submission.is_self:
+                continue
                 
-        submission_model = commentDB.Submission(submission)
-        add_model(submission_model, session)
+            if submission.author is not None and submission.author.name not in users:
+                users.add(submission.author.name)
+                user_model = commentDB.User(name=submission.author.name)
+                add_model(user_model, session)
 
-        submission.replace_more_comments(limit=None, threshold=0)
-        load_comments(submission.comments, users, session)
+            submission_model = commentDB.Submission(submission)
+            added = add_model(submission_model, session)
+            if not added:
+                continue
+
+            success = safe_praw_call(lambda: submission.replace_more_comments(limit=None, threshold=0))
+            if success is False:
+                print('ERROR: Failed to get comments for %s' % submission.fullname)
+                continue
+            load_comments(submission.comments, users, session)
+
+
+# Input: function call to attempt
+# Output: None or commentDB object on success, False on failure
+def safe_praw_call(f):
+    attempt_count = 1
+    while True:
+        try:
+            obj = f()
+            return obj
+        except HTTPError as e:
+            status_code = e.response.status_code
+            if attempt_count == 5:
+                return False
+            print('Error %d making PRAW request, trying again' % status_code)
+            sleep(15)
+        attempt_count += 1
 
 
 def add_model(model, session):
+    obj = None
+    if isinstance(model, commentDB.Subreddit):
+        obj = session.query(commentDB.Subreddit). \
+                      filter(commentDB.Subreddit.subreddit_id == model.subreddit_id). \
+                      first()
+    elif isinstance(model, commentDB.Submission):
+        obj = session.query(commentDB.Submission). \
+                      filter(commentDB.Submission.sub_id == model.sub_id). \
+                      first()
+    elif isinstance(model, commentDB.Comment):
+        obj = session.query(commentDB.Comment). \
+                      filter(commentDB.Comment.com_id == model.com_id). \
+                      first()
+    elif isinstance(model, commentDB.User):
+        obj = session.query(commentDB.User). \
+                      filter(commentDB.User.name == model.name). \
+                      first()
+    if obj is not None:
+        return False
+
     try:
         session.add(model)
         session.commit()
+        return True
     except:
         session.rollback()
+        return False
 
 
 def merge_model(model, session):
@@ -133,8 +187,8 @@ if __name__ == '__main__':
                         help='Reddit username')
     parser.add_argument('-p', '--password', type=str, default='cardinal_cs224u',
                         help='Reddit password')
-    parser.add_argument('subreddits', type=str, nargs='+',
-                        help='List of subreddits to scrape')
+    # parser.add_argument('subreddits', type=str, nargs='+',
+    #                     help='List of subreddits to scrape')
     args = parser.parse_args()
 
     user_agent = ("NLU project: comment scraper " 
@@ -142,7 +196,7 @@ if __name__ == '__main__':
     r = praw.Reddit(user_agent=user_agent)
     r.login(username=args.username, password=args.password)
 
-    engine = create_engine('sqlite:///' + 'db.sqlite', echo=True)
+    engine = create_engine('sqlite:///' + 'redditDB.sqlite', echo=True)
     commentDB.Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     session = Session()
@@ -153,10 +207,9 @@ if __name__ == '__main__':
     add_model(sr_global, session)
     subreddit_models['GLOBAL'] = sr_global    
 
-    for subreddit_name in args.subreddits:
-        subreddit = r.get_subreddit(subreddit_name)
-        subreddit_model = commentDB.Subreddit(subreddit)
-        subreddit_models[subreddit_name] = subreddit_model
-        add_model(subreddit_model, session)        
-        load_subreddit(subreddit, users, session)
+    subreddit = r.get_subreddit('askscience')
+    subreddit_model = commentDB.Subreddit(subreddit)
+    subreddit_models['askscience'] = subreddit_model
+    add_model(subreddit_model, session)        
+    load_subreddit(subreddit, users, session)
     load_users(r, users, subreddit_models, session)

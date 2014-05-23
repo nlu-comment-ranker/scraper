@@ -159,7 +159,11 @@ class Comment(Base):
     # URL info
     permalink = Column(String)
 
-    def __init__(self, praw_obj=None, 
+    ##
+    # WARNING: right now this requests c.submission.fullname
+    # if the submission is not cached by PRAW, this may result
+    # in additional API calls.
+    def __init__(self, praw_obj=None, sub_id=None,
                  rank=None, num_replies=0, convo_depth=1, 
                  **kwargs):
         if not praw_obj: 
@@ -169,6 +173,7 @@ class Comment(Base):
         c = praw_obj
         
         self.com_id = c.fullname    # full identifier: type_id
+        self.sub_id = c.submission.fullname     # submission id
         self.user_name = get_author_name(c)     # reddit author.name        
         self.subreddit_id = c.subreddit_id      # subreddit identifier
         self.parent_id = c.parent_id            # parent identifier
