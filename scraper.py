@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import praw
 import commentDB
 from argparse import ArgumentParser
@@ -9,7 +11,7 @@ from requests.exceptions import HTTPError
 from time import sleep
 
 
-def _build_summary_stats(stats):    
+def _build_summary_stats(stats):
     stats['net_karma'] = stats['pos_karma'] - stats['neg_karma']
 
     if stats['count'] == 0:
@@ -49,7 +51,7 @@ def user_stats(gen, subreddits):
 
     for subreddit in subreddits:
         _build_summary_stats(stats[subreddit])
-    
+
     return stats
 
 
@@ -69,10 +71,10 @@ def load_users(r, users, subreddit_models, session):
 
         for subreddit in subreddit_models:
             activity_model = commentDB.UserActivity(
-                user_name=user.name, 
-                subreddit_id=subreddit_models[subreddit].subreddit_id, 
-                subreddit_name=subreddit_models[subreddit].name, 
-                comment_stats=comment_stats[subreddit], 
+                user_name=user.name,
+                subreddit_id=subreddit_models[subreddit].subreddit_id,
+                subreddit_name=subreddit_models[subreddit].name,
+                comment_stats=comment_stats[subreddit],
                 submission_stats=submission_stats[subreddit])
             add_model(activity_model, session)
 
@@ -83,11 +85,11 @@ def _max_tree_depth(comment):
     return 1 + max(_max_tree_depth(reply) for reply in comment.replies)
 
 
-# Comments are ranked by 'best': 
+# Comments are ranked by 'best':
 #    http://www.redditblog.com/2009/10/reddits-new-comment-sorting-system.html
 # Only storing top-level comments for now
 def load_comments(comments, users, session):
-    for rank, c in enumerate(comments, start=1): 
+    for rank, c in enumerate(comments, start=1):
         text = c.body.encode('ascii', 'ignore')
         if text == '[deleted]':
             continue
@@ -100,29 +102,46 @@ def load_comments(comments, users, session):
         add_model(comment_model, session)
 
 
-def load_subreddit(subreddit, users, session):
-    flairs = ['Physics', 'Maths', 'Astro', 'Computing', 'Geo', 
-              'Eng', 'Chem', 'Soc', 'Bio', 'Psych', 'Med', 'Neuro']
+def load_subreddit(subreddit, users, session, flairs=None):
+    # flairs = ['Physics', 'Maths', 'Astro', 'Computing', 'Geo',
+    #           'Eng', 'Chem', 'Soc', 'Bio', 'Psych', 'Med', 'Neuro']
+
+    if flairs == None: flairs = [None]
     for flair in flairs:
-        submissions = subreddit.search("flair:'%s'" % flair, sort='top', limit=None)
+
+        # Filter to target flair, if desired
+        if flair == None:
+            submissions = subreddit.search("", sort='top', limit=1000)
+        else:
+            submissions = subreddit.search("flair:'%s'" % flair,
+                                           sort='top', limit=1000)
+
         for submission in submissions:
+            print ">> Submission %s" % submission.fullname
             if not submission.is_self:
                 continue
-                
+
             if submission.author is not None and submission.author.name not in users:
                 users.add(submission.author.name)
                 user_model = commentDB.User(name=submission.author.name)
                 add_model(user_model, session)
 
             submission_model = commentDB.Submission(submission)
+
+            # Add submission to database; skip on fail
             added = add_model(submission_model, session)
             if not added:
                 continue
 
-            success = safe_praw_call(lambda: submission.replace_more_comments(limit=None, threshold=0))
+            print submission.comments # DEBUG
+            success = safe_praw_call(lambda: \
+                                     submission.replace_more_comments(limit=None,
+                                                                     threshold=0)
+                                     )
             if success is False:
                 print('ERROR: Failed to get comments for %s' % submission.fullname)
-                continue
+                return False
+
             load_comments(submission.comments, users, session)
 
 
@@ -130,17 +149,16 @@ def load_subreddit(subreddit, users, session):
 # Output: None or commentDB object on success, False on failure
 def safe_praw_call(f):
     attempt_count = 1
-    while True:
+    while attempt_count <= 5:
         try:
             obj = f()
             return obj
         except HTTPError as e:
             status_code = e.response.status_code
-            if attempt_count == 5:
-                return False
             print('Error %d making PRAW request, trying again' % status_code)
             sleep(15)
         attempt_count += 1
+    return False
 
 
 def add_model(model, session):
@@ -162,6 +180,7 @@ def add_model(model, session):
                       filter(commentDB.User.name == model.name). \
                       first()
     if obj is not None:
+        print('WARNING: object already in database.')
         return False
 
     try:
@@ -170,6 +189,7 @@ def add_model(model, session):
         return True
     except:
         session.rollback()
+        print('ERROR: Unable to commit to database.')
         return False
 
 
@@ -183,20 +203,37 @@ def merge_model(model, session):
 
 if __name__ == '__main__':
     parser = ArgumentParser(description='Scrape comments of Reddit self-posts')
-    parser.add_argument('-u', '--username', type=str, default='nlu_comment_ranker',
-                        help='Reddit username')
-    parser.add_argument('-p', '--password', type=str, default='cardinal_cs224u',
-                        help='Reddit password')
+    parser.add_argument('-u', '--username', type=str,
+                        default='nlu_comment_ranker',
+                        help='reddit username')
+    parser.add_argument('-p', '--password', type=str,
+                        default='cardinal_cs224u',
+                        help='reddit password')
+    parser.add_argument('-s', '--subreddit', type=str,
+                        default='askscience',
+                        help='subreddit to scrape')
+    parser.add_argument('-f', '--flair', type=str, nargs='+',
+                        help="List of flair to scrape; useful for expanding endpoints.")
+
+    parser.add_argument('-d', '--dbfile', type=str,
+                        default='redditDB.sqlite',
+                        help="SQLite database file to save output. Will accumulate if file exists.")
+
+    # Optionally, scrape user posts / metadata
+    parser.add_argument('--scrape-users',
+                        dest='scrape_users',
+                        action='store_true')
+
     # parser.add_argument('subreddits', type=str, nargs='+',
     #                     help='List of subreddits to scrape')
     args = parser.parse_args()
 
-    user_agent = ("NLU project: comment scraper " 
+    user_agent = ("NLU project: comment scraper "
                   "by /u/nlu_comment_ranker (smnguyen@stanford.edu)")
     r = praw.Reddit(user_agent=user_agent)
     r.login(username=args.username, password=args.password)
 
-    engine = create_engine('sqlite:///' + 'redditDB.sqlite', echo=True)
+    engine = create_engine('sqlite:///' + args.dbfile, echo=True)
     commentDB.Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     session = Session()
@@ -205,11 +242,17 @@ if __name__ == '__main__':
     users = set()
     sr_global = commentDB.Subreddit(subreddit_id='GLOBAL', name='GLOBAL')
     add_model(sr_global, session)
-    subreddit_models['GLOBAL'] = sr_global    
+    subreddit_models['GLOBAL'] = sr_global
 
-    subreddit = r.get_subreddit('askscience')
+    # Initialize subreddit object
+    subreddit = r.get_subreddit(args.subreddit)
     subreddit_model = commentDB.Subreddit(subreddit)
-    subreddit_models['askscience'] = subreddit_model
-    add_model(subreddit_model, session)        
-    load_subreddit(subreddit, users, session)
-    load_users(r, users, subreddit_models, session)
+    subreddit_models[args.subreddit] = subreddit_model
+    add_model(subreddit_model, session)
+
+    # Scrape subreddit
+    load_subreddit(subreddit, users, session, flairs=args.flair)
+
+    # Scrape users
+    if args.scrape_user:
+        load_users(r, users, subreddit_models, session)
