@@ -133,7 +133,7 @@ def load_subreddit(subreddit, users, session, flairs=None):
             if not added:
                 continue
 
-            print submission.comments # DEBUG
+            # print submission.comments # DEBUG
             success = safe_praw_call(lambda: \
                                      submission.replace_more_comments(limit=None,
                                                                      threshold=0)
