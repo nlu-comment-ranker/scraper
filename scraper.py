@@ -117,7 +117,7 @@ def load_subreddit(subreddit, users, session, flairs=None):
                                            sort='top', limit=1000)
 
         for submission in submissions:
-            print ">> Submission %s" % submission.fullname
+            # print ">> Submission %s" % submission.fullname
             if not submission.is_self:
                 continue
 
@@ -254,5 +254,5 @@ if __name__ == '__main__':
     load_subreddit(subreddit, users, session, flairs=args.flair)
 
     # Scrape users
-    if args.scrape_user:
+    if args.scrape_users:
         load_users(r, users, subreddit_models, session)
